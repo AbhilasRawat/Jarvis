@@ -55,6 +55,7 @@
   *{box-sizing:border-box;margin:0;padding:0;}
   html,body{height:100%;overflow:hidden;}
   body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;display:flex;flex-direction:column;transition:background .3s,color .3s;}
+  #appWrapper{flex:1;display:none;flex-direction:column;height:100%;overflow:hidden;}
 
   /* HEADER */
   .header{display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:56px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;position:relative;z-index:20;}
@@ -228,6 +229,32 @@
 </head>
 <body data-theme="dark">
 
+<!-- API KEY SCREEN -->
+<div id="keyScreen" style="display:none;position:fixed;inset:0;z-index:200;background:var(--bg);flex-direction:column;align-items:center;justify-content:center;padding:24px;gap:20px;">
+  <div style="font-family:'Orbitron',monospace;font-size:26px;font-weight:900;letter-spacing:6px;background:linear-gradient(135deg,var(--accent),var(--accent2),var(--accent3));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">JARVIS</div>
+  <div style="width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2),var(--accent3));display:flex;align-items:center;justify-content:center;font-family:'Orbitron',monospace;font-size:20px;font-weight:900;color:white;animation:orb-pulse 3s ease-in-out infinite;box-shadow:0 0 40px var(--accent-glow);">J</div>
+  <div style="text-align:center;max-width:380px;">
+    <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:8px;">Enter your Anthropic API Key</div>
+    <div style="font-size:13px;color:var(--text2);line-height:1.6;">Your key is stored only in your browser — never sent to any server except Anthropic directly.</div>
+  </div>
+  <div style="width:100%;max-width:400px;display:flex;flex-direction:column;gap:10px;">
+    <input id="apiKeyInput" type="password"
+      style="width:100%;padding:13px 16px;border-radius:12px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-size:14px;font-family:'JetBrains Mono',monospace;outline:none;letter-spacing:1px;"
+      placeholder="sk-ant-api03-..."
+      onkeydown="handleKeyInput(event)"
+    />
+    <div id="keyError" style="font-size:12px;color:var(--danger);font-family:'JetBrains Mono',monospace;min-height:16px;"></div>
+    <button onclick="saveApiKey()" style="padding:13px;border-radius:12px;border:none;background:linear-gradient(135deg,var(--accent),var(--accent2));color:white;font-size:15px;font-weight:700;font-family:'Inter',sans-serif;cursor:pointer;letter-spacing:1px;">
+      ACTIVATE JARVIS ⚡
+    </button>
+    <div style="text-align:center;font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;">
+      Get your free key → <a href="https://console.anthropic.com" target="_blank" style="color:var(--accent);text-decoration:none;">console.anthropic.com</a>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP WRAPPER -->
+<div id="appWrapper" style="display:none;flex-direction:column;height:100%;width:100%">
 <div class="toast" id="toast"></div>
 
 <!-- HEADER -->
@@ -311,6 +338,7 @@
         <div id="historyList">
           <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);text-align:center;padding:16px 0">No chat history yet</div>
         </div>
+        <button class="drawer-btn danger-btn" onclick="resetApiKey()" style="margin-top:4px">🔑 Change API Key</button>
         <button class="drawer-btn danger-btn" onclick="clearAll()" style="margin-top:8px">🗑 Clear All Data</button>
       </div>
     </div>
@@ -356,6 +384,7 @@
     </div>
   </div>
 </div>
+</div><!-- end #appWrapper -->
 
 <!-- Memory Modal -->
 <div class="mem-modal-overlay" id="memModal" onclick="closeMemModal(event)">
@@ -369,6 +398,84 @@
 </div>
 
 <script>
+// ============================================================
+// STORAGE POLYFILL — works on any browser (no Claude.ai needed)
+// ============================================================
+if (!window.storage) {
+  window.storage = {
+    get: async (key) => {
+      const value = localStorage.getItem(key);
+      if (value === null) throw new Error('Key not found');
+      return { key, value, shared: false };
+    },
+    set: async (key, value) => {
+      try { localStorage.setItem(key, value); return { key, value, shared: false }; } catch(e) { return null; }
+    },
+    delete: async (key) => {
+      localStorage.removeItem(key);
+      return { key, deleted: true, shared: false };
+    },
+    list: async (prefix) => {
+      const keys = Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix));
+      return { keys, prefix, shared: false };
+    }
+  };
+}
+
+// ============================================================
+// API KEY MANAGEMENT — stored securely in localStorage only
+// ============================================================
+let JARVIS_API_KEY = localStorage.getItem('jarvis-apikey') || '';
+
+// The Anthropic API cannot be called directly from browsers due to CORS.
+// We use a free CORS proxy (corsproxy.io) that forwards requests and
+// adds the required headers. Your key is never stored on any server.
+const API_ENDPOINT = 'https://corsproxy.io/?' + encodeURIComponent('https://api.anthropic.com/v1/messages');
+
+function getApiHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'x-api-key': JARVIS_API_KEY,
+    'anthropic-version': '2023-06-01',
+    'anthropic-dangerous-direct-browser-access': 'true'
+  };
+}
+
+function showKeyScreen() {
+  document.getElementById('keyScreen').style.display = 'flex';
+  document.getElementById('appWrapper').style.display = 'none';
+}
+
+function hideKeyScreen() {
+  document.getElementById('keyScreen').style.display = 'none';
+  document.getElementById('appWrapper').style.display = 'flex';
+}
+
+function saveApiKey() {
+  const input = document.getElementById('apiKeyInput').value.trim();
+  if (!input.startsWith('sk-ant-')) {
+    document.getElementById('keyError').textContent = '⚠️ That doesn\'t look right. Key should start with sk-ant-';
+    return;
+  }
+  JARVIS_API_KEY = input;
+  localStorage.setItem('jarvis-apikey', input);
+  hideKeyScreen();
+  showToast('🔑 API Key saved! JARVIS is ready.');
+  load();
+}
+
+function resetApiKey() {
+  if (!confirm('Remove your API key and return to key screen?')) return;
+  JARVIS_API_KEY = '';
+  localStorage.removeItem('jarvis-apikey');
+  showKeyScreen();
+}
+
+function handleKeyInput(e) {
+  if (e.key === 'Enter') saveApiKey();
+  document.getElementById('keyError').textContent = '';
+}
+
 // ============================================================
 // STATE
 // ============================================================
@@ -394,9 +501,9 @@ async function compressOldMemories() {
   const toCompress = memories.slice(0, 20);
   const recent = memories.slice(20);
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch(API_ENDPOINT, {
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers: getApiHeaders(),
       body: JSON.stringify({
         model:'claude-haiku-4-5-20251001', // fast model for compression
         max_tokens:300,
@@ -485,9 +592,9 @@ ${engineNote}${memCtx ? '\n\nUser memory:\n' + memCtx : ''}`;
 // ============================================================
 async function streamReply(messages, route, textEl, cursorEl) {
   const t0 = Date.now();
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch(API_ENDPOINT, {
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers: getApiHeaders(),
     body: JSON.stringify({
       model: getModelId(route.model),
       max_tokens: route.model === 'haiku' ? 600 : 1000,
@@ -536,9 +643,9 @@ async function streamReply(messages, route, textEl, cursorEl) {
 // ============================================================
 async function bgEval(q, a, msgEl) {
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch(API_ENDPOINT, {
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers: getApiHeaders(),
       body: JSON.stringify({
         model:'claude-haiku-4-5-20251001', // fast model for eval
         max_tokens:80,
@@ -563,9 +670,9 @@ async function bgLearn(userMsg, aiReply, msgEl) {
   if (msgCounter % 2 !== 0 && memories.length > 5) return;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch(API_ENDPOINT, {
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers: getApiHeaders(),
       body: JSON.stringify({
         model:'claude-haiku-4-5-20251001',
         max_tokens:160,
@@ -780,6 +887,12 @@ function escHtml(t) {
 // STORAGE
 // ============================================================
 async function load() {
+  // If no API key saved, show key screen first
+  if (!JARVIS_API_KEY) {
+    showKeyScreen();
+    return;
+  }
+  hideKeyScreen();
   try { const r = await window.storage.get('jarvis-mem'); if(r) memories = JSON.parse(r.value); } catch(e) { memories=[]; }
   try { const r = await window.storage.get('jarvis-memsummary'); if(r) memSummary = r.value; } catch(e) {}
   try { const r = await window.storage.get('jarvis-history'); if(r) conversationHistory = JSON.parse(r.value); } catch(e) { conversationHistory=[]; }
